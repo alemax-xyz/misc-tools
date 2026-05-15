@@ -1,0 +1,328 @@
+#!/bin/sh -e
+
+set -o pipefail
+3<>/dev/null
+
+[ "$LOG_LEVEL" -ge 0 ] 2>/dev/null || LOG_LEVEL=4 || true
+
+crit()   { [ "$LOG_LEVEL" -ge 1 ] && printf '[CRIT]   %s\n' "$*" 1>&2 || true; }
+error()  { [ "$LOG_LEVEL" -ge 2 ] && printf '[ERROR]  %s\n' "$*" 1>&2 || true; }
+warn()   { [ "$LOG_LEVEL" -ge 3 ] && printf '[WARN]   %s\n' "$*" 1>&2 || true; }
+notice() { [ "$LOG_LEVEL" -ge 4 ] && printf '[NOTICE] %s\n' "$*" 1>&2 || true; }
+info()   { [ "$LOG_LEVEL" -ge 5 ] && printf '[INFO]   %s\n' "$*" 1>&2 || true; }
+debug()  { [ "$LOG_LEVEL" -ge 6 ] && printf '[DEBUG]  %s\n' "$*" 1>&2 || true; }
+
+[ -t 1 -o -t 2 ] && TERM_COLORS="$(tput colors 2>/dev/null)"
+
+_IFS="$IFS" esc="$(printf '\e')" lf='
+'
+
+if [ -z "${NO_COLOR+1}" -a "$TERM" != "dumb" -a "${TERM_COLORS:-0}" -ge 16 ]; then
+	 sci="${esc}[" sgr0="${sci}0m"
+	sgr_bold="${sci}1m" sgr_dim="${sci}2m" sgr_italic="${sci}3m" sgr_underline="${sci}4m"
+	sgr_black="${sci}30m" sgr_maroon="${sci}31m" sgr_green="${sci}32m" sgr_olive="${sci}33m"
+	sgr_navy="${sci}34m" sgr_magenta="${sci}35m" sgr_teal="${sci}36m" sgr_silver="${sci}37m"
+	sgr_gray="${sci}90m" sgr_red="${sci}91m" sgr_lime="${sci}92m" sgr_yellow="${sci}93m"
+	sgr_blue="${sci}94m" sgr_purple="${sci}95m" sgr_cyan="${sci}96m" sgr_white="${sci}97m"
+
+	[ -t 2 ] && {
+		crit()   { [ "$LOG_LEVEL" -ge 1 ] && printf '%s[CRIT]   %s%s\n' "${sgr_red}" "$*" "${sgr0}" 1>&2 || true; }
+		error()  { [ "$LOG_LEVEL" -ge 2 ] && printf '%s[ERROR]  %s%s\n' "${sgr_maroon}" "$*" "${sgr0}" 1>&2 || true; }
+		warn()   { [ "$LOG_LEVEL" -ge 3 ] && printf '%s[WARN]   %s%s\n' "${sgr_yellow}" "$*" "${sgr0}" 1>&2 || true; }
+		notice() { [ "$LOG_LEVEL" -ge 4 ] && printf '%s[NOTICE] %s%s\n' "${sgr_blue}" "$*" "${sgr0}" 1>&2 || true; }
+		info()   { [ "$LOG_LEVEL" -ge 5 ] && printf '%s[INFO]   %s%s\n' "${sgr_green}" "$*" "${sgr0}" 1>&2 || true; }
+		debug()  { [ "$LOG_LEVEL" -ge 6 ] && printf '%s[DEBUG]  %s%s\n' "${sgr_gray}" "$*" "${sgr0}" 1>&2 || true; }
+	}
+fi
+
+fail() { local CODE="$1"; shift; crit "$@"; exit "$CODE"; }
+exec_debug() { debug '$' "$*" ; ("$@" 2>&1 1>&3 | while read -r LINE; do debug "! $LINE"; done) 3>&1 | while read -r LINE; do debug "> $LINE"; done; }
+
+[ $# -eq 0 ] && {
+	cat <<-EOF
+		${sgr0}Usage: ${sgr_white}${0##*/}${sgr0} ${sgr_green}ACTION${sgr0} ... ${sgr_green}OPTIONS${sgr0} ... 
+
+		Available actions:
+		  ${sgr_green}--download${sgr0}    Resolve dependencies and download all of the "${sgr_teal}.deb${sgr0}" files into ${sgr_olive}SANDBOX_DOWNLOAD_DIR${sgr0} (defaults to ${sgr_olive}SANDBOX_ROOT${sgr_teal}${sgr_dim}/downloads${sgr0}).
+
+		  ${sgr_green}--install${sgr0}     Resolve dependencies and install all the packages into ${sgr_olive}SANDBOX_INSTALL_DIR${sgr0} (defaults to ${sgr_olive}SANDBOX_ROOT${sgr_teal}${sgr_dim}/rootfs${sgr0}).
+
+		  ${sgr_green}--verstamp${sgr0}    Resolve dependencies and produce verstamp files at ${sgr_olive}SANDBOX_VERSTAMP_DIR${sgr0} (defaults to ${sgr_olive}SANDBOX_ROOT${sgr_teal}${sgr_dim}/rootfs/var/lib/packages/${sgr0}).
+
+		                If ${sgr_olive}SANDBOX_ROOT${sgr0} environment variable is not set or empty - current working directory will be used.
+
+		Available options:
+		  ${sgr_green}--repository${sgr0}  Treat subsequent arguments as debian repository definitions (${sgr_underline}${sgr_italic}https://wiki.debian.org/SourcesList${sgr0}).
+		                Arguments could either point to a file, a directory, or be a direct source line in "${sgr_teal}deb [options] URI SUITE COMPONENTS ...${sgr0}" format.
+		                If points to a file it must have a "${sgr_teal}.sources${sgr0}" or "${sgr_teal}.list${sgr0}" extension.
+		                If points to a directory - it will non-recursively look for "${sgr_teal}*.sources${sgr0}" and "${sgr_teal}*.list${sgr0}" files.
+
+		  ${sgr_green}--keyring${sgr0}     Treat subsequent arguments as keyring definitions.
+		                Should point to either a file or a directory with files with "${sgr_teal}.gpg${sgr0}" and/or "${sgr_teal}.asc${sgr0}" extensions.
+
+		  ${sgr_green}--installed${sgr0}   Treat subsequent arguments as package definitions of already installed packages.
+		                Arguments could either pointin to a file or a directory with files, or be a direct package definition in "${sgr_teal}package${sgr_dim}[=version]${sgr0}" format.
+		                If points to a directory - it will non-recursively look for all files.
+		                Each package in the file is a space (or a new line) separated list of entries in "${sgr_teal}package${sgr_dim}[=version]${sgr0}" format.
+		                If version is omitted - best candidate version will be resolved.
+
+		  ${sgr_green}--obsolete${sgr0}    Treat subsequent arguments package definitions of locally installed / obsolete packages.
+		                This is effectively the same as installing a package with a higher version and without any dependencies from a dummy "${sgr_teal}${sgr_dim}.deb${sgr0}" manually.
+		                Could be used to prevent any attempts of installing repository package and resolving its dependencies.
+		                Accepted arguments are the same as above. If version is omitted "${sgr_teal}${sgr_dim}9999:9999${sgr0}" will be used.
+
+		  ${sgr_green}--required${sgr0}    Treat subsequent arguments as package definitions required for the installation.
+		                Accepted arguments are the same as above. If version is omitted - best candidate version will be resolved.
+
+		  ${sgr_green}--optional${sgr0}    Treat subsequent arguments as package definitions optional for the installation.
+		                Arguments prefixed with "${sgr_teal}@${sgr0}" pointing to the filename or a directory with files where each file name is treated as a package name and file contents as its version.
+		                Argument could also be a direct package definition in "${sgr_teal}package${sgr_dim}[=version]${sgr0}" format.
+		                If version is omitted - best candidate version will be resolved.
+
+		  ${sgr_green}--external${sgr0}    Treat subsequent arguments as external "${sgr_teal}.deb${sgr0}" packages required for the installation.
+		                Argument could either point to a ${sgr_teal}.deb${sgr0} file, or to a directory with ${sgr_teal}*.deb${sgr0} files.
+
+		  ${sgr_green}--apt-config${sgr0}  Treat subsequent arguments as apt configuration directives in the "${sgr_teal}KEY${sgr_dim}=VALUE${sgr0}" format. For example:
+		                  "${sgr_teal}APT::Install-Recommends${sgr_dim}=false${sgr0}"
+		                  "${sgr_teal}Acquire::http::Proxy${sgr_dim}=http://${sgr0}${sgr_gray}[${sgr_teal}${sgr_dim}user:pass@${sgr0}${sgr_gray}]${sgr_teal}${sgr_dim}proxy.host.ltd${sgr0}${sgr_gray}[${sgr_teal}${sgr_dim}:3128${sgr0}${sgr_gray}]${sgr_teal}${sgr_dim}/${sgr0}"
+		                  "${sgr_teal}Acquire::https::Proxy${sgr_dim}=http://${sgr0}${sgr_gray}[${sgr_teal}${sgr_dim}user:pass@${sgr0}${sgr_gray}]${sgr_teal}${sgr_dim}proxy.host.ltd${sgr0}${sgr_gray}[${sgr_teal}${sgr_dim}:3128${sgr0}${sgr_gray}]${sgr_teal}${sgr_dim}/${sgr0}"
+		                  "${sgr_teal}Acquire::AllowInsecureRepositories${sgr_dim}=true${sgr0}" ${sgr_gray}(not recommended)${sgr0}
+		                  "${sgr_teal}Acquire::AllowWeakRepositories${sgr_dim}=true${sgr0}" ${sgr_gray}(not recommended)${sgr0}
+		                  "${sgr_teal}APT::Get::AllowUnauthenticated${sgr_dim}=true${sgr0}" ${sgr_gray}(not recommended)${sgr0}
+
+EOF
+	exit 0
+}
+
+ACTION_DOWNLOAD=0 ACTION_INSTALL=0 ACTION_VERSTAMP=0
+PKG_REPOSITORIES="" PKG_REPOSITORY_FILES="" PKG_KEYRING_FILES=""
+PKG_INSTALLED="" PKG_OBSOLETE="" PKG_REQUIRED="" PKG_OPTIONAL="" PKG_EXTERNAL=""
+APT_CONFIG=""
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		(--*=*) KEY="${1%%=*}" VALUE="${1#*=}"; shift; set -- '' "$KEY" "$VALUE" "$@" ;;
+		(--repository|--keyring|--installed|--obsolete|--required|--optional|--external|--apt-config) OPTION="${1#--}" ;;
+		(--download) OPTION="" ACTION_DOWNLOAD=1 ;;
+		(--install) OPTION="" ACTION_INSTALL=1 ;;
+		(--verstamp) OPTION="" ACTION_VERSTAMP=1 ;;
+		(-*) fail 1 "Unrecognized command line option '$1'" ;;
+		(*) if [ -z "$1" ]; then
+			warn "Empty argument in --$OPTION section"
+		elif [ "$OPTION" = "repository" ]; then
+			if [ "${1#deb}" != "$1" ]; then
+				PKG_REOSITORIES="$(printf '%s\n' "$1" "$PKG_REPOSITORIES")"
+			elif [ -d "$1" ]; then
+				PKG_REPOSITORY_FILES="$PKG_REPOSITORY_FILES${lf}$(find -L "$1" -maxdepth 1 \( -name '*.list' -o -name '*.sources' \) )"
+			elif [ -f "$1" -a "${1%.list}:${1%.sources}" != "$1:$1" ]; then
+				PKG_REPOSITORY_FILES="$(printf '%s\n' "$PKG_REPOSITORY_FILES" "$1")"
+			else
+				fail 2 "Invalid repository definition '$1'"
+			fi
+		elif [ "$OPTION" = "keyring" ]; then
+			if [ -d "$1" ]; then
+				PKG_KEYRING_FILES="$PKG_KEYRING_FILES${lf}$(find -L "$1" -maxdepth 1 \( -name '*.gpg' -o -name '*.asc' \) )"
+			elif [ -f "$1" -a "${1%.asc}:${1%.gpg}" != "$1:$1" ]; then
+				PKG_KEYRING_FILES="$(printf '%s\n' "$PKG_KEYRING_FILES" "$1")"
+			else
+				fail 2 "Invalid keyring definition '$1'"
+			fi
+		elif [ "$OPTION" = "installed" ]; then
+			if [ -d "$1" ]; then
+				PKG_INSTALLED="$(printf '%s\n' $PKG_INSTALLED $(find "$1" -maxdepth 1 -type f -exec cat -- {} +))"
+			elif [ -f "$1" ]; then
+				PKG_INSTALLED="$(printf '%s\n' $PKG_INSTALLED $(cat "$1"))"
+			else
+				PKG_INSTALLED="$(printf '%s\n' $PKG_INSTALLED $1)"
+			fi
+		elif [ "$OPTION" = "obsolete" ]; then
+			if [ -d "$1" ]; then
+				PKG_OBSOLETE="$(printf '%s\n' $PKG_OBSOLETE $(find "$1" -maxdepth 1 -type f -exec cat -- {} +))"
+			elif [ -f "$1" ]; then
+				PKG_OBSOLETE="$(printf '%s\n' $PKG_OBSOLETE $(cat "$1"))"
+			else
+				PKG_OBSOLETE="$(printf '%s\n' $PKG_OBSOLETE $1)"
+			fi
+		elif [ "$OPTION" = "required" ]; then
+			if [ -d "$1" ]; then
+				PKG_REQUIRED="$(printf '%s\n' $PKG_REQUIRED $(find "$1" -maxdepth 1 -type f -exec cat -- {} +))"
+			elif [ -f "$1" ]; then
+				PKG_REQUIRED="$(printf '%s\n' $PKG_REQUIRED $(cat "$1"))"
+			else
+				PKG_REQUIRED="$(printf '%s\n' $PKG_REQUIRED $1)"
+			fi
+		elif [ "$OPTION" = "optional" ]; then
+			if [ -d "$1" ]; then
+				PKG_OPTIONAL="$(printf '%s\n' $PKG_OPTIONAL $(find "$1" -maxdepth 1 -type f -exec cat -- {} +))"
+			elif [ -f "$1" ]; then
+				PKG_OPTIONAL="$(printf '%s\n' $PKG_OPTIONAL $(cat "$1"))"
+			else
+				PKG_OPTIONAL="$(printf '%s\n' $PKG_OPTIONAL $1)"
+			fi
+		elif [ "$OPTION" = "external" ]; then
+			if [ -d "$1" ]; then
+				PKG_EXTERNAL="$PKG_EXTERNAL${lf}$(find -L "${1#@}" -maxdepth 1 -name '*.deb' -exec printf '%s\n' {} +)"
+			elif [ -f "$1" -a "${1%.deb}" != "$1" ]; then
+				PKG_EXTERNAL="$(printf '%s\n' "$PKG_EXTERNAL" "$1")"
+			else
+				fail 2 "Invalid external package definition '$1'"
+			fi
+		elif [ "$OPTION" = 'apt-config' ]; then
+			if [ "${1#-}" = "$1" -a "${1%;}" = "$1" ]; then
+				APT_CONFIG="$(printf '%s\n' "$APT_CONFIG" "-o $1")"
+			else
+				fail 2 "Invalid apt configuration option '$1'"
+			fi
+		else
+			fail 1 "Invalid command line argument '$1'"
+		fi
+		;;
+	esac
+	shift
+done
+
+[ "$ACTION_DOWNLOAD" != 1 -a "$ACTION_INSTALL" != 1 -a "$ACTION_VERSTAMP" != 1 ] && fail 3 "Action is required"
+
+PKG_INSTALLED="$(printf '%s\n' "$PKG_INSTALLED" | sort -u)"
+PKG_OBSOLETE="$(printf '%s\n' "$PKG_OBSOLETE" | sort -u)"
+PKG_REQUIRED="$(printf '%s\n' "$PKG_REQUIRED" | sort -u)"
+PKG_OPTIONAL="$(printf '%s\n' "$PKG_OPTIONAL" | sort -u)"
+PKG_EXTERNAL="$(printf '%s\n' "$PKG_EXTERNAL" | sort -u)"
+
+[ -z "$PKG_REQUIRED$PKG_OPTIONAL$PKG_EXTERNAL" ] && fail 4 "No packages to process"
+
+PKG_DUPLICATES="$(printf '%s\n' $PKG_INSTALLED $PKG_OBSOLETE | sed 's/=.*//' | sort | uniq -d)"
+[ -n "$PKG_DUPLICATES" ] && warn "Duplicate packages specified: $(printf '%s, ' $PKG_DUPLICATES)"
+
+PKG_DUPLICATES="$(printf $PKG_REQUIRED $PKG_OPTIONAL | sed 's/=.*//' | sort | uniq -d)"
+[ -n "$PKG_DUPLICATES" ] && warn "Duplicate packages specified: $(printf '%s, ' $PKG_DUPLICATES)"
+
+SANDBOX_TEMP="$(mktemp -u -d)"
+[ -z "$SANDBOX_ROOT" ] && SANDBOX_ROOT="$PWD"
+[ -z "$SANDBOX_DOWNLOAD_DIR" ] && SANDBOX_DOWNLOAD_DIR="$SANDBOX_ROOT/downloads"
+[ -z "$SANDBOX_INSTALL_DIR" ] && SANDBOX_INSTALL_DIR="$SANDBOX_ROOT/rootfs"
+[ -z "$SANDBOX_VERSTAMP_DIR" ] && SANDBOX_VERSTAMP_DIR="$SANDBOX_ROOT/rootfs/var/lib/packages"
+
+[ "$ACTION_DOWNLOAD" = 1 ] && {
+	mkdir -p "$SANDBOX_DOWNLOAD_DIR"
+	notice "Packages will be downloaded into '$SANDBOX_DOWNLOAD_DIR'"
+}
+
+[ "$ACTION_INSTALL" = 1 ] && {
+	mkdir -p "$SANDBOX_INSTALL_DIR"
+	notice "Packages will be installed into '$SANDBOX_INSTALL_DIR'"
+}
+
+[ "$ACTION_VERSTAMP" = 1 ] && {
+	mkdir -p "$SANDBOX_VERSTAMP_DIR"
+	notice "Packages will be verstamped into '$SANDBOX_VERSTAMP_DIR'"
+}
+
+debug "Creating sandbox directory structure at '$SANDBOX_TEMP'"
+mkdir -p \
+	"$SANDBOX_TEMP/etc/apt/preferences.d" \
+	"$SANDBOX_TEMP/etc/apt/sources.list.d" \
+	"$SANDBOX_TEMP/etc/apt/trusted.gpg.d" \
+	"$SANDBOX_TEMP/var/lib/dpkg" \
+	"$SANDBOX_TEMP/var/lib/packages" \
+	"$SANDBOX_TEMP/var/lib/apt/lists/partial" \
+	"$SANDBOX_TEMP/var/cache/apt/archives/partial"
+trap 'debug "Removing temporary directory '$SANDBOX_TEMP'"; rm -rf "$SANDBOX_TEMP"' EXIT INT TERM
+touch "$SANDBOX_TEMP/var/lib/dpkg/status"
+
+[ -n "$PKG_REPOSITORIES" ] && {
+	OUT="$SANDBOX_TEMP/etc/apt/sources.list"
+	info "Setting up default repository file '$OUT'"
+	printf '%s' "$PKG_REPOSITORIES" > "$OUT"
+}
+for IN in $PKG_REPOSITORY_FILES; do
+	OUT="$(mktemp -u -p "$SANDBOX_TEMP/etc/apt/sources.list.d/" -t XXXXXX).${IN##*.}"
+	info "Creating repository file '$OUT' from '$IN'"
+	cp "$IN" "$OUT"
+done
+for IN in $PKG_KEYRING_FILES; do
+	OUT="$(mktemp -u -p "$SANDBOX_TEMP/etc/apt/trusted.gpg.d/" -t XXXXXX).${IN##*.}"
+	info "Creating keyring file '$OUT' from '$IN'"
+	cp "$IN" "$OUT"
+done
+
+export DEBIAN_FRONTEND=noninteractive
+
+
+notice "Refreshing repository package index"
+
+IFS="${lf}" set -- apt-get update -q -o Dir="$SANDBOX_TEMP" $APT_CONFIG; IFS="${_IFS}"
+exec_debug "$@"
+
+IFS="${lf}" set -- apt-cache show -q --no-all-versions -o Dir="$SANDBOX_TEMP" $APT_CONFIG; IFS="${_IFS}"
+for PACKAGE in $PKG_INSTALLED; do
+	info "Marking package '$PACKAGE' as installed"
+	CONTROL="$("$@" "$PACKAGE" 2>/dev/null)"
+	[ -z "$CONTROL" ] && fail 5 "Package '$PACKAGE' not found"
+        cat >> "$SANDBOX_TEMP/var/lib/dpkg/status" <<-EOF
+		Status: install ok installed
+		$CONTROL
+
+EOF
+done
+
+for PACKAGE in $PKG_OBSOLETE; do
+	PKG_VERSION="${PACKAGE#*=}"
+	info "Marking package '$PACKAGE' as locally installed / obsolete"
+	[ "$PKG_VERSION" = "$PACKAGE" ] && PKG_VERSION="9999:9999"
+	cat >> "$SANDBOX_TEMP/var/lib/dpkg/status" <<-EOF
+		Status: install ok installed
+		Package: ${PACKAGE%%=*}
+		Version: $PKG_VERSION
+		Architecture: all
+		Multi-Arch: foreign
+
+EOF
+done
+
+[ -n "$PKG_REQUIRED" ] && {
+	notice "Resolving the folowing required packages: $PKG_REQUIRED"
+	IFS="${lf}" set -- apt-get install -q -y -d -o Dir="$SANDBOX_TEMP" $APT_CONFIG; IFS="${_IFS}"
+	exec_debug "$@" $PKG_REQUIRED
+}
+
+
+[ -n "$PKG_OPTIONAL" ] && {
+	notice "Resolving the folowing optional packages: $PKG_OPTIONAL"
+	IFS="${lf}" set -- apt-get install -q -y -d -o Dir="$SANDBOX_TEMP" $APT_CONFIG; IFS="${_IFS}"
+	for PACKAGE in $PKG_OPTIONAL; do
+		if exec_debug "$@" $PACKAGE; then
+			info "Package '$PACKAGE' was resolved"
+		else
+			info "Ppackage '$PACKAGE' was NOT resolved, skipped"
+		fi
+	done
+}
+
+[ "$ACTION_DOWNLOAD" = 1 ] && {
+	if [ "$ACTION_INSTALL" = 1 -o "$ACTION_VERSTAMP" = 1 ]; then
+		notice "Copying downloaded files over from '$SANDBOX_TEMP/var/cache/apt/archives' to '$SANDBOX_DOWNLOAD_DIR'"
+		exec_debug find -L "$SANDBOX_TEMP/var/cache/apt/archives" -maxdepth 1 -type f -name '*.deb' -exec cp -t "$SANDBOX_DOWNLOAD_DIR" -f {} +
+	else
+		notice "Moving downloaded files over from '$SANDBOX_TEMP/var/cache/apt/archives' to '$SANDBOX_DOWNLOAD_DIR'"
+		exec_debug find -L "$SANDBOX_TEMP/var/cache/apt/archives" -maxdepth 1 -type f -name '*.deb' -exec mv -t "$SANDBOX_DOWNLOAD_DIR" -f {} +
+	fi
+}
+
+[ "$ACTION_INSTALL" = 1 ] && {
+	notice "Installing packages into '$SANDBOX_INSTALL_DIR'"
+	{ find -L "$SANDBOX_TEMP/var/cache/apt/archives" -maxdepth 1 -type f -name '*.deb' && printf '%s' "$PKG_EXTERNAL"; } | while read -r FILE; do \
+		info "Extracting '$FILE'"
+		exec_debug dpkg-deb -x "$FILE" "$SANDBOX_INSTALL_DIR"
+	done
+}
+
+[ "$ACTION_VERSTAMP" = 1 ] && {
+	notice "Verstamping packages into '$SANDBOX_VERSTAMP_DIR'"
+	{ find -L "$SANDBOX_TEMP/var/cache/apt/archives" -maxdepth 1 -type f -name '*.deb'; printf '%s' "$PKG_EXTERNAL"; } | while read -r FILE; do \
+		info "Extracting control information from '$FILE'"
+		PKG_NAME="$(dpkg-deb --field "$FILE" Package)"
+		PKG_VERSION="$(dpkg-deb -f "$FILE" Version)"
+		printf '%s=%s\n' "$PKG_NAME" "$PKG_VERSION" > "$SANDBOX_VERSTAMP_DIR/$PKG_NAME"
+	done
+}

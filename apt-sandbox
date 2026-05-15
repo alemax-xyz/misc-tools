@@ -3,14 +3,14 @@
 set -o pipefail
 3<>/dev/null
 
-[ "$LOG_LEVEL" -ge 0 ] 2>/dev/null || LOG_LEVEL=4 || true
-
-crit()   { [ "$LOG_LEVEL" -ge 1 ] && printf '[CRIT]   %s\n' "$*" 1>&2 || true; }
-error()  { [ "$LOG_LEVEL" -ge 2 ] && printf '[ERROR]  %s\n' "$*" 1>&2 || true; }
-warn()   { [ "$LOG_LEVEL" -ge 3 ] && printf '[WARN]   %s\n' "$*" 1>&2 || true; }
-notice() { [ "$LOG_LEVEL" -ge 4 ] && printf '[NOTICE] %s\n' "$*" 1>&2 || true; }
-info()   { [ "$LOG_LEVEL" -ge 5 ] && printf '[INFO]   %s\n' "$*" 1>&2 || true; }
-debug()  { [ "$LOG_LEVEL" -ge 6 ] && printf '[DEBUG]  %s\n' "$*" 1>&2 || true; }
+crit()   { printf '[CRIT]   %s\n' "$*" 1>&2; }
+error()  { printf '[ERROR]  %s\n' "$*" 1>&2; }
+warn()   { printf '[WARN]   %s\n' "$*" 1>&2; }
+notice() { printf '[NOTICE] %s\n' "$*" 1>&2; }
+info()   { printf '[INFO]   %s\n' "$*" 1>&2; }
+debug()  { printf '[DEBUG]  %s\n' "$*" 1>&2; }
+stdout() { printf '[stdout] %s\n' "$*" 1>&2; }
+stderr() { printf '[stderr] %s\n' "$*" 1>&2; }
 
 [ -t 1 -o -t 2 ] && TERM_COLORS="$(tput colors 2>/dev/null)"
 
@@ -26,17 +26,19 @@ if [ -z "${NO_COLOR+1}" -a "$TERM" != "dumb" -a "${TERM_COLORS:-0}" -ge 16 ]; th
 	sgr_blue="${sci}94m" sgr_purple="${sci}95m" sgr_cyan="${sci}96m" sgr_white="${sci}97m"
 
 	[ -t 2 ] && {
-		crit()   { [ "$LOG_LEVEL" -ge 1 ] && printf '%s[CRIT]   %s%s\n' "${sgr_red}" "$*" "${sgr0}" 1>&2 || true; }
-		error()  { [ "$LOG_LEVEL" -ge 2 ] && printf '%s[ERROR]  %s%s\n' "${sgr_maroon}" "$*" "${sgr0}" 1>&2 || true; }
-		warn()   { [ "$LOG_LEVEL" -ge 3 ] && printf '%s[WARN]   %s%s\n' "${sgr_yellow}" "$*" "${sgr0}" 1>&2 || true; }
-		notice() { [ "$LOG_LEVEL" -ge 4 ] && printf '%s[NOTICE] %s%s\n' "${sgr_blue}" "$*" "${sgr0}" 1>&2 || true; }
-		info()   { [ "$LOG_LEVEL" -ge 5 ] && printf '%s[INFO]   %s%s\n' "${sgr_green}" "$*" "${sgr0}" 1>&2 || true; }
-		debug()  { [ "$LOG_LEVEL" -ge 6 ] && printf '%s[DEBUG]  %s%s\n' "${sgr_gray}" "$*" "${sgr0}" 1>&2 || true; }
+		crit()   { printf '%s[CRIT]   %s%s\n' "${sgr_red}" "$*" "${sgr0}" 1>&2; }
+		error()  { printf '%s[ERROR]  %s%s\n' "${sgr_maroon}" "$*" "${sgr0}" 1>&2; }
+		warn()   { printf '%s[WARN]   %s%s\n' "${sgr_yellow}" "$*" "${sgr0}" 1>&2; }
+		notice() { printf '%s[NOTICE] %s%s\n' "${sgr_blue}" "$*" "${sgr0}" 1>&2; }
+		info()   { printf '%s[INFO]   %s%s\n' "${sgr_green}" "$*" "${sgr0}" 1>&2; }
+		debug()  { printf '%s[DEBUG]  %s%s\n' "${sgr_gray}" "$*" "${sgr0}" 1>&2; }
+		stdout() { printf '%s(stdout)   %s%s\n' "${sgr_teal}${sgr_dim}" "$*" "${sgr0}" 1>&2; }
+		stderr() { printf '%s(stderr)   %s%s\n' "${sgr_purple}" "$*" "${sgr0}" 1>&2; }
 	}
 fi
 
 fail() { local CODE="$1"; shift; crit "$@"; exit "$CODE"; }
-exec_debug() { debug '$' "$*" ; ("$@" 2>&1 1>&3 | while read -r LINE; do debug "! $LINE"; done) 3>&1 | while read -r LINE; do debug "> $LINE"; done; }
+exec_debug() { debug '$' "$*"; ("$@" 2>&1 1>&3 | while read -r LINE; do stderr "$LINE"; done) 3>&1 | while read -r LINE; do stdout "$LINE"; done; }
 
 [ $# -eq 0 ] && {
 	cat <<-EOF
@@ -254,31 +256,32 @@ notice "Refreshing repository package index"
 IFS="${lf}" set -- apt-get update -q -o Dir="$SANDBOX_TEMP" $APT_CONFIG; IFS="${_IFS}"
 exec_debug "$@"
 
-IFS="${lf}" set -- apt-cache show -q --no-all-versions -o Dir="$SANDBOX_TEMP" $APT_CONFIG; IFS="${_IFS}"
-for PACKAGE in $PKG_INSTALLED; do
-	info "Marking package '$PACKAGE' as installed"
-	CONTROL="$("$@" "$PACKAGE" 2>/dev/null)"
-	[ -z "$CONTROL" ] && fail 5 "Package '$PACKAGE' not found"
-        cat >> "$SANDBOX_TEMP/var/lib/dpkg/status" <<-EOF
-		Status: install ok installed
-		$CONTROL
+[ -n "$PKG_INSTALLED" ] && {
+	notice "Marking the folowing packages as installed: $(printf '%s ' $PKG_INSTALLED)"
+	IFS="${lf}" set -- apt-cache show -q --no-all-versions -o Dir="$SANDBOX_TEMP" $APT_CONFIG $PKG_INSTALLED; IFS="${_IFS}"
+	"$@" | while IFS='' read -r LINE; do
+		[ -z "$LINE" ] && printf '%s\n' "Status: install ok installed"
+		[ "${LINE%%:*}" = 'Package' ] && debug "Marking package '${LINE#*:}' as installed"
+		printf '%s\n' "$LINE"
+	done >> "$SANDBOX_TEMP/var/lib/dpkg/status"
+}
+
+[ -n "$PKG_OBSOLETE" ] && {
+	notice "Marking the folowing packages as locally installed / obsolete: $(printf '%s ' $PKG_OBSOLETE)"
+	for PACKAGE in $PKG_OBSOLETE; do
+		PKG_VERSION="${PACKAGE#*=}"
+		debug "Marking package '$PACKAGE' as locally installed / obsolete"
+		[ "$PKG_VERSION" = "$PACKAGE" ] && PKG_VERSION="9999:9999"
+		cat >> "$SANDBOX_TEMP/var/lib/dpkg/status" <<-EOF
+			Package: ${PACKAGE%%=*}
+			Version: $PKG_VERSION
+			Architecture: all
+			Multi-Arch: foreign
+			Status: install ok installed
 
 EOF
-done
-
-for PACKAGE in $PKG_OBSOLETE; do
-	PKG_VERSION="${PACKAGE#*=}"
-	info "Marking package '$PACKAGE' as locally installed / obsolete"
-	[ "$PKG_VERSION" = "$PACKAGE" ] && PKG_VERSION="9999:9999"
-	cat >> "$SANDBOX_TEMP/var/lib/dpkg/status" <<-EOF
-		Status: install ok installed
-		Package: ${PACKAGE%%=*}
-		Version: $PKG_VERSION
-		Architecture: all
-		Multi-Arch: foreign
-
-EOF
-done
+	done
+}
 
 [ -n "$PKG_REQUIRED" ] && {
 	notice "Resolving the folowing required packages: $(printf '%s ' $PKG_REQUIRED)"

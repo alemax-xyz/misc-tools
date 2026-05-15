@@ -198,10 +198,10 @@ PKG_DUPLICATES="$(printf $PKG_REQUIRED $PKG_OPTIONAL | sed 's/=.*//' | sort | un
 [ -n "$PKG_DUPLICATES" ] && warn "Duplicate packages specified: $(printf '%s, ' $PKG_DUPLICATES)"
 
 SANDBOX_TEMP="$(mktemp -u -d)"
-[ -z "$SANDBOX_ROOT" ] && SANDBOX_ROOT="$PWD"
-[ -z "$SANDBOX_DOWNLOAD_DIR" ] && SANDBOX_DOWNLOAD_DIR="$SANDBOX_ROOT/downloads"
-[ -z "$SANDBOX_INSTALL_DIR" ] && SANDBOX_INSTALL_DIR="$SANDBOX_ROOT/rootfs"
-[ -z "$SANDBOX_VERSTAMP_DIR" ] && SANDBOX_VERSTAMP_DIR="$SANDBOX_ROOT/rootfs/var/lib/packages"
+[ -z "$SANDBOX_ROOT" ] && SANDBOX_ROOT="${PWD%/}"
+[ -z "$SANDBOX_DOWNLOAD_DIR" ] && SANDBOX_DOWNLOAD_DIR="${SANDBOX_ROOT%/}/downloads"
+[ -z "$SANDBOX_INSTALL_DIR" ] && SANDBOX_INSTALL_DIR="${SANDBOX_ROOT%/}/rootfs"
+[ -z "$SANDBOX_VERSTAMP_DIR" ] && SANDBOX_VERSTAMP_DIR="${SANDBOX_ROOT%/}/rootfs/var/lib/packages"
 
 [ "$ACTION_DOWNLOAD" = 1 ] && {
 	mkdir -p "$SANDBOX_DOWNLOAD_DIR"
@@ -281,14 +281,14 @@ EOF
 done
 
 [ -n "$PKG_REQUIRED" ] && {
-	notice "Resolving the folowing required packages: $PKG_REQUIRED"
+	notice "Resolving the folowing required packages: $(printf '%s ' $PKG_REQUIRED)"
 	IFS="${lf}" set -- apt-get install -q -y -d -o Dir="$SANDBOX_TEMP" $APT_CONFIG; IFS="${_IFS}"
 	exec_debug "$@" $PKG_REQUIRED
 }
 
 
 [ -n "$PKG_OPTIONAL" ] && {
-	notice "Resolving the folowing optional packages: $PKG_OPTIONAL"
+	notice "Resolving the folowing optional packages: $(printf '%s ' $PKG_OPTIONAL)"
 	IFS="${lf}" set -- apt-get install -q -y -d -o Dir="$SANDBOX_TEMP" $APT_CONFIG; IFS="${_IFS}"
 	for PACKAGE in $PKG_OPTIONAL; do
 		if exec_debug "$@" $PACKAGE; then

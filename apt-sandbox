@@ -261,7 +261,7 @@ exec_debug "$@"
 	IFS="${lf}" set -- apt-cache show -q --no-all-versions -o Dir="$SANDBOX_TEMP" $APT_CONFIG $PKG_INSTALLED; IFS="${_IFS}"
 	"$@" | while IFS='' read -r LINE; do
 		[ -z "$LINE" ] && printf '%s\n' "Status: install ok installed"
-		[ "${LINE%%:*}" = 'Package' ] && debug "Marking package '${LINE#*:}' as installed"
+		[ "${LINE%%:*}" = 'Package' ] && debug "Marking package '${LINE#*: }' as installed"
 		printf '%s\n' "$LINE"
 	done >> "$SANDBOX_TEMP/var/lib/dpkg/status"
 }
@@ -315,7 +315,6 @@ EOF
 [ "$ACTION_INSTALL" = 1 ] && {
 	notice "Installing packages into '$SANDBOX_INSTALL_DIR'"
 	{ find -L "$SANDBOX_TEMP/var/cache/apt/archives" -maxdepth 1 -type f -name '*.deb' && printf '%s' "$PKG_EXTERNAL"; } | while read -r FILE; do \
-		info "Extracting '$FILE'"
 		exec_debug dpkg-deb -x "$FILE" "$SANDBOX_INSTALL_DIR"
 	done
 }
@@ -323,7 +322,7 @@ EOF
 [ "$ACTION_VERSTAMP" = 1 ] && {
 	notice "Verstamping packages into '$SANDBOX_VERSTAMP_DIR'"
 	{ find -L "$SANDBOX_TEMP/var/cache/apt/archives" -maxdepth 1 -type f -name '*.deb'; printf '%s' "$PKG_EXTERNAL"; } | while read -r FILE; do \
-		info "Extracting control information from '$FILE'"
+		debug "Extracting control information from '$(basename "$FILE")'"
 		PKG_NAME="$(dpkg-deb --field "$FILE" Package)"
 		PKG_VERSION="$(dpkg-deb -f "$FILE" Version)"
 		printf '%s=%s\n' "$PKG_NAME" "$PKG_VERSION" > "$SANDBOX_VERSTAMP_DIR/$PKG_NAME"

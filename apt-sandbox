@@ -1,117 +1,37 @@
 #!/bin/sh -e
 
 set -o pipefail
-3<>/dev/null
 
-crit()   { printf '[CRIT]   %s\n' "$*" 1>&2; }
-error()  { printf '[ERROR]  %s\n' "$*" 1>&2; }
-warn()   { printf '[WARN]   %s\n' "$*" 1>&2; }
-notice() { printf '[NOTICE] %s\n' "$*" 1>&2; }
-info()   { printf '[INFO]   %s\n' "$*" 1>&2; }
-debug()  { printf '[DEBUG]  %s\n' "$*" 1>&2; }
-stdout() { printf '[stdout] %s\n' "$*" 1>&2; }
-stderr() { printf '[stderr] %s\n' "$*" 1>&2; }
+SCRIPT_NAME="$0" SCRIPT_PATH="${0%/*}" SCRIPT_FILENAME="$(readlink -f -- "$0")" SCRIPT_DIRNAME="${SCRIPT_FILENAME%/*}"
 
-[ -t 1 -o -t 2 ] && TERM_COLORS="$(tput colors 2>/dev/null)"
+. "${SCRIPT_DIRNAME}/include/term.sh"
 
-_IFS="$IFS" esc="$(printf '\e')" lf='
-'
+ACTION_HELP=0 ACTION_DOWNLOAD=0 ACTION_INSTALL=0 ACTION_VERSTAMP=0
+PKG_REPOSITORIES="" PKG_REPOSITORY_FILES="" PKG_KEYRING_FILES=""
+PKG_INSTALLED="" PKG_OBSOLETE="" PKG_REQUIRED="" PKG_OPTIONAL="" PKG_EXTERNAL=""
+APT_CONFIG=""
 
-if [ -z "${NO_COLOR+1}" -a "$TERM" != "dumb" -a "${TERM_COLORS:-0}" -ge 16 ]; then
-	 sci="${esc}[" sgr0="${sci}0m"
-	sgr_bold="${sci}1m" sgr_dim="${sci}2m" sgr_italic="${sci}3m" sgr_underline="${sci}4m"
-	sgr_black="${sci}30m" sgr_maroon="${sci}31m" sgr_green="${sci}32m" sgr_olive="${sci}33m"
-	sgr_navy="${sci}34m" sgr_magenta="${sci}35m" sgr_teal="${sci}36m" sgr_silver="${sci}37m"
-	sgr_gray="${sci}90m" sgr_red="${sci}91m" sgr_lime="${sci}92m" sgr_yellow="${sci}93m"
-	sgr_blue="${sci}94m" sgr_purple="${sci}95m" sgr_cyan="${sci}96m" sgr_white="${sci}97m"
-
-	[ -t 2 ] && {
-		crit()   { printf '%s[CRIT]   %s%s\n' "${sgr_red}" "$*" "${sgr0}" 1>&2; }
-		error()  { printf '%s[ERROR]  %s%s\n' "${sgr_maroon}" "$*" "${sgr0}" 1>&2; }
-		warn()   { printf '%s[WARN]   %s%s\n' "${sgr_yellow}" "$*" "${sgr0}" 1>&2; }
-		notice() { printf '%s[NOTICE] %s%s\n' "${sgr_blue}" "$*" "${sgr0}" 1>&2; }
-		info()   { printf '%s[INFO]   %s%s\n' "${sgr_green}" "$*" "${sgr0}" 1>&2; }
-		debug()  { printf '%s[DEBUG]  %s%s\n' "${sgr_gray}" "$*" "${sgr0}" 1>&2; }
-		stdout() { printf '%s(stdout)   %s%s\n' "${sgr_teal}${sgr_dim}" "$*" "${sgr0}" 1>&2; }
-		stderr() { printf '%s(stderr)   %s%s\n' "${sgr_purple}" "$*" "${sgr0}" 1>&2; }
-	}
-fi
-
-fail() { local CODE="$1"; shift; crit "$@"; exit "$CODE"; }
-exec_debug() { debug '$' "$*"; ("$@" 2>&1 1>&3 | while read -r LINE; do stderr "$LINE"; done) 3>&1 | while read -r LINE; do stdout "$LINE"; done; }
-
-[ $# -eq 0 ] && {
+[ $# = 0 ] && {
 	cat <<-EOF
-		${sgr0}Usage: ${sgr_white}${0##*/}${sgr0} ${sgr_green}ACTION${sgr0} ... ${sgr_green}OPTIONS${sgr0} ... 
+		${sgr0}Usage: ${sgr_white}${0##*/}${sgr0} ${sgr_gray}[${sgr0}${sgr_green}ACTIONS${sgr0} ... ${sgr_gray}]${sgr0} ${sgr_gray}[${sgr0}${sgr_green}OPTIONS${sgr0} ...${sgr_gray}]${sgr0}
 
-		Available actions:
-		  ${sgr_green}--download${sgr0}    Resolve dependencies and download all of the "${sgr_teal}.deb${sgr0}" files into ${sgr_olive}SANDBOX_DOWNLOAD_DIR${sgr0} (defaults to ${sgr_olive}SANDBOX_ROOT${sgr_teal}${sgr_dim}/downloads${sgr0}).
-
-		  ${sgr_green}--install${sgr0}     Resolve dependencies and install all the packages into ${sgr_olive}SANDBOX_INSTALL_DIR${sgr0} (defaults to ${sgr_olive}SANDBOX_ROOT${sgr_teal}${sgr_dim}/rootfs${sgr0}).
-
-		  ${sgr_green}--verstamp${sgr0}    Resolve dependencies and produce verstamp files at ${sgr_olive}SANDBOX_VERSTAMP_DIR${sgr0} (defaults to ${sgr_olive}SANDBOX_ROOT${sgr_teal}${sgr_dim}/rootfs/var/lib/packages/${sgr0}).
-
-		                If ${sgr_olive}SANDBOX_ROOT${sgr0} environment variable is not set or empty - current working directory will be used.
-
-		Available options:
-		  ${sgr_green}--repository${sgr0}  Treat subsequent arguments as debian repository definitions (${sgr_underline}${sgr_italic}https://wiki.debian.org/SourcesList${sgr0}).
-		                Arguments could either point to a file, a directory, or be a direct source line in "${sgr_teal}deb [options] URI SUITE COMPONENTS ...${sgr0}" format.
-		                If points to a file it must have a "${sgr_teal}.sources${sgr0}" or "${sgr_teal}.list${sgr0}" extension.
-		                If points to a directory - it will non-recursively look for "${sgr_teal}*.sources${sgr0}" and "${sgr_teal}*.list${sgr0}" files.
-
-		  ${sgr_green}--keyring${sgr0}     Treat subsequent arguments as keyring definitions.
-		                Should point to either a file or a directory with files with "${sgr_teal}.gpg${sgr0}" and/or "${sgr_teal}.asc${sgr0}" extensions.
-
-		  ${sgr_green}--installed${sgr0}   Treat subsequent arguments as package definitions of already installed packages.
-		                Arguments could either pointin to a file or a directory with files, or be a direct package definition in "${sgr_teal}package${sgr_dim}[=version]${sgr0}" format.
-		                If points to a directory - it will non-recursively look for all files.
-		                Each package in the file is a space (or a new line) separated list of entries in "${sgr_teal}package${sgr_dim}[=version]${sgr0}" format.
-		                If version is omitted - best candidate version will be resolved.
-
-		  ${sgr_green}--obsolete${sgr0}    Treat subsequent arguments package definitions of locally installed / obsolete packages.
-		                This is effectively the same as installing a package with a higher version and without any dependencies from a dummy "${sgr_teal}${sgr_dim}.deb${sgr0}" manually.
-		                Could be used to prevent any attempts of installing repository package and resolving its dependencies.
-		                Accepted arguments are the same as above. If version is omitted "${sgr_teal}${sgr_dim}9999:9999${sgr0}" will be used.
-
-		  ${sgr_green}--required${sgr0}    Treat subsequent arguments as package definitions required for the installation.
-		                Accepted arguments are the same as above. If version is omitted - best candidate version will be resolved.
-
-		  ${sgr_green}--optional${sgr0}    Treat subsequent arguments as package definitions optional for the installation.
-		                Arguments prefixed with "${sgr_teal}@${sgr0}" pointing to the filename or a directory with files where each file name is treated as a package name and file contents as its version.
-		                Argument could also be a direct package definition in "${sgr_teal}package${sgr_dim}[=version]${sgr0}" format.
-		                If version is omitted - best candidate version will be resolved.
-
-		  ${sgr_green}--external${sgr0}    Treat subsequent arguments as external "${sgr_teal}.deb${sgr0}" packages required for the installation.
-		                Argument could either point to a ${sgr_teal}.deb${sgr0} file, or to a directory with ${sgr_teal}*.deb${sgr0} files.
-
-		  ${sgr_green}--apt-config${sgr0}  Treat subsequent arguments as apt configuration directives in the "${sgr_teal}KEY${sgr_dim}=VALUE${sgr0}" format. For example:
-		                  "${sgr_teal}APT::Install-Recommends${sgr_dim}=false${sgr0}"
-		                  "${sgr_teal}Acquire::http::Proxy${sgr_dim}=http://${sgr0}${sgr_gray}[${sgr_teal}${sgr_dim}user:pass@${sgr0}${sgr_gray}]${sgr_teal}${sgr_dim}proxy.host.ltd${sgr0}${sgr_gray}[${sgr_teal}${sgr_dim}:3128${sgr0}${sgr_gray}]${sgr_teal}${sgr_dim}/${sgr0}"
-		                  "${sgr_teal}Acquire::https::Proxy${sgr_dim}=http://${sgr0}${sgr_gray}[${sgr_teal}${sgr_dim}user:pass@${sgr0}${sgr_gray}]${sgr_teal}${sgr_dim}proxy.host.ltd${sgr0}${sgr_gray}[${sgr_teal}${sgr_dim}:3128${sgr0}${sgr_gray}]${sgr_teal}${sgr_dim}/${sgr0}"
-		                  "${sgr_teal}Acquire::AllowInsecureRepositories${sgr_dim}=true${sgr0}" ${sgr_gray}(not recommended)${sgr0}
-		                  "${sgr_teal}Acquire::AllowWeakRepositories${sgr_dim}=true${sgr0}" ${sgr_gray}(not recommended)${sgr0}
-		                  "${sgr_teal}APT::Get::AllowUnauthenticated${sgr_dim}=true${sgr0}" ${sgr_gray}(not recommended)${sgr0}
+		For more details run: ${sgr_white}${0##*/}${sgr0} ${sgr_green}--help${sgr0}
 
 EOF
 	exit 0
 }
 
-ACTION_DOWNLOAD=0 ACTION_INSTALL=0 ACTION_VERSTAMP=0
-PKG_REPOSITORIES="" PKG_REPOSITORY_FILES="" PKG_KEYRING_FILES=""
-PKG_INSTALLED="" PKG_OBSOLETE="" PKG_REQUIRED="" PKG_OPTIONAL="" PKG_EXTERNAL=""
-APT_CONFIG=""
-
 while [ $# -gt 0 ]; do
 	case "$1" in
+		('') warn "Empty argument ignored" ;;
 		(--*=*) KEY="${1%%=*}" VALUE="${1#*=}"; shift; set -- '' "$KEY" "$VALUE" "$@" ;;
 		(--repository|--keyring|--installed|--obsolete|--required|--optional|--external|--apt-config) OPTION="${1#--}" ;;
+		(--help) OPTION="" ACTION_HELP=1 ;;
 		(--download) OPTION="" ACTION_DOWNLOAD=1 ;;
 		(--install) OPTION="" ACTION_INSTALL=1 ;;
 		(--verstamp) OPTION="" ACTION_VERSTAMP=1 ;;
 		(-*) fail 1 "Unrecognized command line option '$1'" ;;
-		(*) if [ -z "$1" ]; then
-			warn "Empty argument in --$OPTION section"
-		elif [ "$OPTION" = "repository" ]; then
+		(*) if [ "$OPTION" = "repository" ]; then
 			if [ "${1#deb}" != "$1" ]; then
 				PKG_REOSITORIES="$(printf '%s\n' "$1" "$PKG_REPOSITORIES")"
 			elif [ -d "$1" ]; then
@@ -183,7 +103,69 @@ while [ $# -gt 0 ]; do
 	shift
 done
 
-[ "$ACTION_DOWNLOAD" != 1 -a "$ACTION_INSTALL" != 1 -a "$ACTION_VERSTAMP" != 1 ] && fail 3 "Action is required"
+[ "$ACTION_HELP" = 1 ] && {
+	cat <<-EOF
+		${sgr0}Usage: ${sgr_white}${0##*/}${sgr0} ${sgr_gray}[${sgr0}${sgr_green}ACTIONS${sgr0} ... ${sgr_gray}]${sgr0} ${sgr_gray}[${sgr0}${sgr_green}OPTIONS${sgr0} ...${sgr_gray}]${sgr0}
+
+		Available actions:
+		  ${sgr_green}--download${sgr0}    Resolve dependencies and download all of the "${sgr_teal}.deb${sgr0}" files into ${sgr_olive}SANDBOX_DOWNLOAD_DIR${sgr0} (defaults to ${sgr_olive}SANDBOX_ROOT${sgr_teal}${sgr_dim}/downloads${sgr0}).
+
+		  ${sgr_green}--install${sgr0}     Resolve dependencies and install all the packages into ${sgr_olive}SANDBOX_INSTALL_DIR${sgr0} (defaults to ${sgr_olive}SANDBOX_ROOT${sgr_teal}${sgr_dim}/rootfs${sgr0}).
+
+		  ${sgr_green}--verstamp${sgr0}    Resolve dependencies and produce verstamp files at ${sgr_olive}SANDBOX_VERSTAMP_DIR${sgr0} (defaults to ${sgr_olive}SANDBOX_ROOT${sgr_teal}${sgr_dim}/rootfs/var/lib/packages/${sgr0}).
+
+		                If ${sgr_olive}SANDBOX_ROOT${sgr0} environment variable is not set or empty - current working directory will be used.
+
+		  ${sgr_green}--help${sgr0}        Show this help and exit
+
+		Available options:
+		  ${sgr_green}--repository${sgr0}  Treat subsequent arguments as debian repository definitions (${sgr_underline}${sgr_italic}https://wiki.debian.org/SourcesList${sgr0}).
+		                Arguments could either point to a file, a directory, or be a direct source line in "${sgr_teal}deb [options] URI SUITE COMPONENTS ...${sgr0}" format.
+		                If points to a file it must have a "${sgr_teal}.sources${sgr0}" or "${sgr_teal}.list${sgr0}" extension.
+		                If points to a directory - it will non-recursively look for "${sgr_teal}*.sources${sgr0}" and "${sgr_teal}*.list${sgr0}" files.
+
+		  ${sgr_green}--keyring${sgr0}     Treat subsequent arguments as keyring definitions.
+		                Should point to either a file or a directory with files with "${sgr_teal}.gpg${sgr0}" and/or "${sgr_teal}.asc${sgr0}" extensions.
+
+		  ${sgr_green}--installed${sgr0}   Treat subsequent arguments as package definitions of already installed packages.
+		                Arguments could either pointin to a file or a directory with files, or be a direct package definition in "${sgr_teal}package${sgr_dim}[=version]${sgr0}" format.
+		                If points to a directory - it will non-recursively look for all files.
+		                Each package in the file is a space (or a new line) separated list of entries in "${sgr_teal}package${sgr_dim}[=version]${sgr0}" format.
+		                If version is omitted - best candidate version will be resolved.
+
+		  ${sgr_green}--obsolete${sgr0}    Treat subsequent arguments package definitions of locally installed / obsolete packages.
+		                This is effectively the same as installing a package with a higher version and without any dependencies from a dummy "${sgr_teal}${sgr_dim}.deb${sgr0}" manually.
+		                Could be used to prevent any attempts of installing repository package and resolving its dependencies.
+		                Accepted arguments are the same as above. If version is omitted "${sgr_teal}${sgr_dim}9999:9999${sgr0}" will be used.
+
+		  ${sgr_green}--required${sgr0}    Treat subsequent arguments as package definitions required for the installation.
+		                Accepted arguments are the same as above. If version is omitted - best candidate version will be resolved.
+
+		  ${sgr_green}--optional${sgr0}    Treat subsequent arguments as package definitions optional for the installation.
+		                Arguments prefixed with "${sgr_teal}@${sgr0}" pointing to the filename or a directory with files where each file name is treated as a package name and file contents as its version.
+		                Argument could also be a direct package definition in "${sgr_teal}package${sgr_dim}[=version]${sgr0}" format.
+		                If version is omitted - best candidate version will be resolved.
+
+		  ${sgr_green}--external${sgr0}    Treat subsequent arguments as external "${sgr_teal}.deb${sgr0}" packages required for the installation.
+		                Argument could either point to a ${sgr_teal}.deb${sgr0} file, or to a directory with ${sgr_teal}*.deb${sgr0} files.
+
+		  ${sgr_green}--apt-config${sgr0}  Treat subsequent arguments as apt configuration directives in the "${sgr_teal}KEY${sgr_dim}=VALUE${sgr0}" format.
+		                Most common:
+		                  ${sgr_teal}APT::Install-Recommends${sgr_dim}=false${sgr0}
+		                  ${sgr_teal}APT::Get::Upgrade=${sgr_dim}=false${sgr0}
+		                HTTP/HTTPS proxy settings:
+		                  ${sgr_teal}Acquire::http::Proxy${sgr_dim}=http://${sgr0}${sgr_gray}[${sgr_teal}${sgr_dim}user:pass@${sgr0}${sgr_gray}]${sgr_teal}${sgr_dim}proxy.host.ltd${sgr0}${sgr_gray}[${sgr_teal}${sgr_dim}:3128${sgr0}${sgr_gray}]${sgr_teal}${sgr_dim}/${sgr0}
+		                  ${sgr_teal}Acquire::https::Proxy${sgr_dim}=http://${sgr0}${sgr_gray}[${sgr_teal}${sgr_dim}user:pass@${sgr0}${sgr_gray}]${sgr_teal}${sgr_dim}proxy.host.ltd${sgr0}${sgr_gray}[${sgr_teal}${sgr_dim}:3128${sgr0}${sgr_gray}]${sgr_teal}${sgr_dim}/${sgr0}
+		                Not recommended (may be helpful for debugging):
+		                  ${sgr_teal}Acquire::AllowInsecureRepositories${sgr_dim}=true${sgr0}
+		                  ${sgr_teal}Acquire::AllowWeakRepositories${sgr_dim}=true${sgr0}
+		                  ${sgr_teal}APT::Get::AllowUnauthenticated${sgr_dim}=true${sgr0}
+
+EOF
+	exit 0
+}
+
+[ "$ACTION_DOWNLOAD" != 1 -a "$ACTION_INSTALL" != 1 -a "$ACTION_VERSTAMP" != 1 ] && fail 3 "Action is required. For more details run: ${0##*/} --help"
 
 PKG_INSTALLED="$(printf '%s\n' "$PKG_INSTALLED" | sort -u)"
 PKG_OBSOLETE="$(printf '%s\n' "$PKG_OBSOLETE" | sort -u)"
@@ -229,7 +211,7 @@ mkdir -p \
 	"$SANDBOX_TEMP/var/lib/packages" \
 	"$SANDBOX_TEMP/var/lib/apt/lists/partial" \
 	"$SANDBOX_TEMP/var/cache/apt/archives/partial"
-trap 'debug "Removing temporary directory '$SANDBOX_TEMP'"; rm -rf "$SANDBOX_TEMP"' EXIT INT TERM
+trap '[ -d "$SANDBOX_TEMP" ] && { debug "Removing temporary directory '$SANDBOX_TEMP'"; rm -rf "$SANDBOX_TEMP"; }' EXIT INT TERM
 touch "$SANDBOX_TEMP/var/lib/dpkg/status"
 
 [ -n "$PKG_REPOSITORIES" ] && {

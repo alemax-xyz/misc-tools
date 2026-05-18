@@ -271,8 +271,9 @@ EOF
 	exec_debug "$@" $PKG_REQUIRED
 
 	find -L "$SANDBOX_TEMP/var/cache/apt/archives" -maxdepth 1 -type f -name '*.deb' | while read -r FILE; do \
+		debug "Marking package '$(dpkg-deb -f "$FILE" package)' as installed"
 		dpkg-deb -I "$FILE" control
-		printf '\n'
+		printf '%s\n\n' 'Status: install ok installed'
 	done >> "$SANDBOX_TEMP/var/lib/dpkg/status"
 }
 

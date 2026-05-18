@@ -269,8 +269,12 @@ EOF
 	notice "Resolving the folowing required packages: $(printf '%s ' $PKG_REQUIRED)"
 	IFS="${lf}" set -- apt-get install -q -y -d -o Dir="$SANDBOX_TEMP" $APT_CONFIG; IFS="${_IFS}"
 	exec_debug "$@" $PKG_REQUIRED
-}
 
+	find -L "$SANDBOX_TEMP/var/cache/apt/archives" -maxdepth 1 -type f -name '*.deb' | while read -r FILE; do \
+		dpkg-deb -I "$FILE" control
+		printf '\n'
+	done >> "$SANDBOX_TEMP/var/lib/dpkg/status"
+}
 
 [ -n "$PKG_OPTIONAL" ] && {
 	notice "Resolving the folowing optional packages: $(printf '%s ' $PKG_OPTIONAL)"

@@ -279,14 +279,8 @@ EOF
 
 [ -n "$PKG_OPTIONAL" ] && {
 	notice "Resolving the folowing optional packages: $(printf '%s ' $PKG_OPTIONAL)"
-	IFS="${lf}" set -- apt-get install -q -y -d -o Dir="$SANDBOX_TEMP" $APT_CONFIG; IFS="${_IFS}"
-	for PACKAGE in $PKG_OPTIONAL; do
-		if exec_debug "$@" $PACKAGE; then
-			info "Package '$PACKAGE' was resolved"
-		else
-			info "Ppackage '$PACKAGE' was NOT resolved, skipped"
-		fi
-	done
+	IFS="${lf}" set -- apt-get install --ignore-missing -q -y -d -o Dir="$SANDBOX_TEMP" $APT_CONFIG
+	exec_debug "$@" $PKG_OPTIONAL
 }
 
 [ "$ACTION_DOWNLOAD" = 1 ] && {

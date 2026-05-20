@@ -301,17 +301,19 @@ EOF
 
 [ "$ACTION_INSTALL" = 1 ] && {
 	notice "Installing packages into '$SANDBOX_INSTALL_DIR'"
-	{ find -L "$SANDBOX_TEMP/var/cache/apt/archives" -maxdepth 1 -type f -name '*.deb' && printf '%s' "$PKG_EXTERNAL"; } | while read -r FILE; do \
-		exec_debug dpkg-deb -x "$FILE" "$SANDBOX_INSTALL_DIR"
+	{ find -L "$SANDBOX_TEMP/var/cache/apt/archives" -maxdepth 1 -type f -name '*.deb' ; printf '%s' "$PKG_EXTERNAL"; } | while read -r FILE; do \
+		[ -n "$FILE" ] && exec_debug dpkg-deb -x "$FILE" "$SANDBOX_INSTALL_DIR"
 	done
 }
 
 [ "$ACTION_VERSTAMP" = 1 ] && {
 	notice "Verstamping packages into '$SANDBOX_VERSTAMP_DIR'"
 	{ find -L "$SANDBOX_TEMP/var/cache/apt/archives" -maxdepth 1 -type f -name '*.deb'; printf '%s' "$PKG_EXTERNAL"; } | while read -r FILE; do \
-		debug "Extracting control information from '$(basename "$FILE")'"
-		PKG_NAME="$(dpkg-deb --field "$FILE" Package)"
-		PKG_VERSION="$(dpkg-deb -f "$FILE" Version)"
-		printf '%s=%s\n' "$PKG_NAME" "$PKG_VERSION" > "$SANDBOX_VERSTAMP_DIR/$PKG_NAME"
+		[ -n "$FILE" ] && {
+			debug "Extracting control information from '$(basename "$FILE")'"
+			PKG_NAME="$(dpkg-deb --field "$FILE" Package)"
+			PKG_VERSION="$(dpkg-deb -f "$FILE" Version)"
+			printf '%s=%s\n' "$PKG_NAME" "$PKG_VERSION" > "$SANDBOX_VERSTAMP_DIR/$PKG_NAME"
+		}
 	done
 }

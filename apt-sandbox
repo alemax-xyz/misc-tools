@@ -178,7 +178,7 @@ PKG_EXTERNAL="$(printf '%s\n' "$PKG_EXTERNAL" | sort -u)"
 PKG_DUPLICATES="$(printf '%s\n' $PKG_INSTALLED $PKG_OBSOLETE | sed 's/=.*//' | sort | uniq -d)"
 [ -n "$PKG_DUPLICATES" ] && warn "Duplicate packages specified: $(printf '%s, ' $PKG_DUPLICATES)"
 
-PKG_DUPLICATES="$(printf $PKG_REQUIRED $PKG_OPTIONAL | sed 's/=.*//' | sort | uniq -d)"
+PKG_DUPLICATES="$(printf '%s\n' $PKG_REQUIRED $PKG_OPTIONAL | sed 's/=.*//' | sort | uniq -d)"
 [ -n "$PKG_DUPLICATES" ] && warn "Duplicate packages specified: $(printf '%s, ' $PKG_DUPLICATES)"
 
 SANDBOX_TEMP="$(mktemp -u -d)"

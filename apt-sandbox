@@ -301,14 +301,14 @@ EOF
 
 [ "$ACTION_INSTALL" = 1 ] && {
 	notice "Installing packages into '$SANDBOX_INSTALL_DIR'"
-	{ find -L "$SANDBOX_TEMP/var/cache/apt/archives" -maxdepth 1 -type f -name '*.deb' ; printf '%s' "$PKG_EXTERNAL"; } | while read -r FILE; do \
+	{ find -L "$SANDBOX_TEMP/var/cache/apt/archives" -maxdepth 1 -type f -name '*.deb' || true; printf '%s' "$PKG_EXTERNAL"; } | while read -r FILE; do \
 		[ -n "$FILE" ] && exec_debug dpkg-deb -x "$FILE" "$SANDBOX_INSTALL_DIR"
 	done
 }
 
 [ "$ACTION_VERSTAMP" = 1 ] && {
 	notice "Verstamping packages into '$SANDBOX_VERSTAMP_DIR'"
-	{ find -L "$SANDBOX_TEMP/var/cache/apt/archives" -maxdepth 1 -type f -name '*.deb'; printf '%s' "$PKG_EXTERNAL"; } | while read -r FILE; do \
+	{ find -L "$SANDBOX_TEMP/var/cache/apt/archives" -maxdepth 1 -type f -name '*.deb' || true; printf '%s' "$PKG_EXTERNAL"; } | while read -r FILE; do \
 		[ -n "$FILE" ] && {
 			debug "Extracting control information from '$(basename "$FILE")'"
 			PKG_NAME="$(dpkg-deb --field "$FILE" Package)"
